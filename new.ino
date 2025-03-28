@@ -8,38 +8,45 @@
 #define TRIG_PIN 2
 #define ECHO_PIN 3
 
+#define SWITCH_PIN 6
+
 #define SIZE_READ 64 // количество усреднений для средних арифм. фильтров
 #define DELAY_MICROS 10 // для hc sr04 10мкс, для jsn sr04 20мкс
 #define MAX_DISTANCE 530 // максимальная дистанция которую может считать датчик
 
-#define PORT 5082
-#define SERVER_IP "91.122.217.111"
+#define INTERVAL_SENSOR 200
+#define INTERVAL_SEND 30000
+#define INTERVAL_SLEEP 300000
+
+String SERVER_URL = "91.122.217.111:5085";
 
 SoftwareSerial GPRS(SIM_RX_PIN, SIM_TX_PIN);  //Digital Pin 7 = TX, Digital Pin 8 = RX
+
 FilterDistance<SIZE_READ> sensor(TRIG_PIN, ECHO_PIN, MAX_DISTANCE, DELAY_MICROS);
+SIM800GPRS modem(&GPRS, &Serial, SERVER_URL);
 
-SIM800GPRS modem(&GPRS, &Serial);
-
-uint32_t ms, timer;
-uint32_t intervalSend = 30000;
-int intervalSensor = 200;
+uint32_t ms, timer1, timer2, timerSleep;
 
 int distanceValue = 0;
 
-char data[50];
+bool ecoMode = false;
+bool flagSleep = false;
 
-void createMessage() {
-  sprintf(data, "%s%d%s%d\"}",
-          "{\"Api\":\"lvl\",\"Value\":\"",
-          distanceValue < 100, "\",\"Dist\":\"",
-          (int)distanceValue);
+void createMessage(String &s) {
+  s += F("{\"Api\":\"lvl\",\"Value\":\"");
+  s += distanceValue < 100;
+  s += F("\",\"Dist\":\"");
+  s += distanceValue;
+  s += F("\"}");
 }
 
 void setup() {
-  delay(2000);
+  pinMode(SWITCH_PIN, INPUT);
+  if (digitalRead(SWITCH_PIN)) {
+    //    ecoMode = true;
+  }
 
-  modem.setInterval(intervalSend);
-  modem.setURL(SERVER_IP, PORT);
+  delay(2000);
 
   GPRS.begin(19200);
   Serial.begin(9600);
@@ -50,14 +57,39 @@ void setup() {
 
 void loop() {
   ms = millis();
-  //  if (modem.connectAvailable()) {
-  //    createMessage();
-  //    modem.sendRequest(data);
-  //  }
 
-  if (ms - timer > intervalSensor) {
-    distanceValue = sensor.getDistance();
-    timer = ms;
-    Serial.println(distanceValue);
+  if (!flagSleep) {
+    modem.start();
+    
+    timerSleep = ms;
+    
+    if (ms - timer2 > INTERVAL_SENSOR) {
+      distanceValue = sensor.getDistance();
+      timer2 = ms;
+      Serial.println(distanceValue);
+    }
+  }
+
+
+  if (modem.isReadyToSend() && ms - timer1 > INTERVAL_SEND) {
+    String s;
+    createMessage(s);
+    modem.sendRequest(s);
+    timer1 = ms;
+  }
+
+
+  if (modem.isSendedRequest()) {
+    if (ecoMode) {
+      //sleep
+      modem.disconnectModem();
+      flagSleep = true;
+    } else {
+      modem.nextSend();
+    }
+  }
+
+  if(ms - timerSleep > INTERVAL_SLEEP){
+    flagSleep = false;
   }
 }

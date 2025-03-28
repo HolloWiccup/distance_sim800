@@ -21,36 +21,56 @@ enum State {
   WAITING
 };
 
+enum StateSend {
+  SENDING,
+  WAIT_TO_SEND,
+  SENDED,
+  SEND,
+};
+
 class SIM800GPRS {
   public:
-    SIM800GPRS(Stream* GPRS, Stream* SerialDebug) {
+    SIM800GPRS(Stream* GPRS, Stream* SerialDebug, String &URL) {
       _GPRS = GPRS;
       _SerialDebug = SerialDebug;
-    }
-    void setURL(String url, int port) {
-      _serverURL = url + ":" + String(port);
+      _serverURL = URL;
     }
 
-    void setInterval(uint32_t interval) {
-      _interval = interval;
-    }
-
-    void sendRequest(char* message) {
-      if (checkReadyToSend() && millis() -  _timeLastSend > _interval) {
-        httpRequst(message);
-      }
-    }
-
-    bool connectAvailable() {
-      if (millis() - _timer > _delayCommand && !_connect) {
+    void start() {
+      if (millis() - _timer > _delayCommand) {
         connectModem();
+        _timer = millis();
       }
-      return _connect;
+    }
+
+    void disconnectModem() {
+      sendCommand("AT+CIPSHUT");
+      _currentState = SETUP_GPRS;
+    }
+
+    void sendRequest(String &message) {
+      _message = message;
+      _currentStateSend = SEND;
+    }
+
+    bool isReadyToSend() {
+      return _currentState == HTTP_LENGTH &&
+             _currentStateSend == WAIT_TO_SEND;
+    }
+
+    bool isSendedRequest() {
+      return _currentStateSend == SENDED;
+    }
+
+    void nextSend() {
+      _currentStateSend = WAIT_TO_SEND;
     }
 
   private:
     State _currentState = SETUP_GPRS;
-    String _serverURL = "91.122.217.111:5082";
+    StateSend _currentStateSend = WAIT_TO_SEND;
+    String &_message;
+    String &_serverURL;
     bool _connect = false;
     int _delayCommand = 500;
     int _timer = 0;
@@ -59,15 +79,6 @@ class SIM800GPRS {
 
     Stream* _GPRS;
     Stream* _SerialDebug;
-
-    bool checkReadyToSend() {
-      bool isReady = false;
-      if (millis() - _timer > _delayCommand && _connect) {
-        isReady = true;
-        _timer = millis();
-      }
-      return isReady;
-    }
 
     String sendCommand(String command) {
       _GPRS->println(command);
@@ -79,34 +90,6 @@ class SIM800GPRS {
       _SerialDebug->println(response);
 
       return (response);
-    }
-
-    void httpRequst(char* message) {
-      byte len = strlen(message);
-
-      switch (_currentState) {
-        case HTTP_LENGTH:
-          sendCommand("AT+HTTPDATA=" + String(len) + ",10000");  //33 was "AT+HTTPDATA=15,10000"
-          _currentState = HTTP_DATA;
-          break;
-        case HTTP_DATA:
-          sendCommand(message);
-          _currentState = HTTP_ACTION;
-          break;
-        case HTTP_ACTION:
-          String response = sendCommand("AT+HTTPACTION=1");
-          if (response.indexOf("OK") == -1) _currentState = RECONNECT;
-          else {
-            _currentState = HTTP_LENGTH;
-            _timeLastSend = millis();
-          }
-          break;
-      }
-    }
-
-    void disconnectModem() {
-      _connect = false;
-      sendCommand("AT+CIPSHUT");
     }
 
     void connectModem() {
@@ -142,15 +125,30 @@ class SIM800GPRS {
         case HTTP_URL:
           sendCommand("AT+HTTPPARA=\"URL\",\"" + _serverURL + "\"");
           _currentState = HTTP_LENGTH;
-          _connect = true;
+          _currentStateSend = WAIT_TO_SEND;
+          break;
+        case HTTP_LENGTH:
+          if (_currentStateSend == SEND) {
+            byte len = _message.length();
+            sendCommand("AT+HTTPDATA=" + String(len) + ",10000");  //33 was "AT+HTTPDATA=15,10000"
+            _currentState = HTTP_DATA;
+            _currentStateSend = SENDING;
+          }
+          break;
+        case HTTP_DATA:
+          sendCommand(_message);
+          _currentState = HTTP_ACTION;
+          break;
+        case HTTP_ACTION:
+          String response = sendCommand(F("AT+HTTPACTION=1"));
+          if (response.indexOf("OK") == -1) _currentState = RECONNECT;
+          else {
+            _currentState = HTTP_LENGTH;
+            _currentStateSend = SENDED;
+          }
           break;
         case RECONNECT:
           disconnectModem();
-          _currentState = SETUP_APN;
-          break;
-        case DISCONNECT:
-          disconnectModem();
-          _currentState = SETUP_APN;
           break;
       }
     }
